@@ -1,0 +1,19 @@
+PORT RANGE DESCRIBING SYNTAX
+TODO: Not Implemented yet
+
+Example Raw:
+   0~65535,!-,-400,!20-32,(15-21),(!17),!80
+
+Interpreted:
+=> Initial Range 0~65535, Exclude All
+   *1	Include 0~400, Exclude 20~32, Exclude 80,
+   *0	Include 15~21, Exclude 17
+
+Application Example:
+   2344:192.168.50.198:22
+   2345:192.168.50.198:3306
+   2346:192.168.50.198:9000
+   2347:192.168.50.198:81
+
+Can be changed to:
+   2344~2347,-:192.168.50.198:22,3306,9000,81

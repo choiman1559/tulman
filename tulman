@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+from enum import Enum
+
+help_string = """
+ SSH Reverse Tunneling Configuration Tool
+ Version 0.0.1 Written By. Choiman1559
+
+ This Script is written for simplify "ssh -R" option, by automatically formatting
+ Reverse port, Local Addr, and Local port and run ssh from it.
+
+ Usage: "tulman {start|stop|restart|status|help} [ARCHIVE extension:conf] (-s|--stub-test)"
+"""
+
+ACTION_TYPE_NOT_SPECIFIED = "Error: Action type not specified!"
+ACTION_TYPE_NOT_SUPPORTED = "Error: Action type not supported: \"{0}\""
+CONFIG_FILE_NOT_SPECIFIED = "Error: Configuration file not specified!"
+CONFIG_FILE_NOT_FOUND = "Error: Configuration file not found or readable!"
+CONFIG_CATEGORY_TYPE_NOT_SUPPORTED = "WARNING: Configuration category type not supported: \"{0}\""
+CONFIG_PREF_KEY_NOT_SUPPORTED = "WARNING: Configuration preference key not supported: \"{0}\""
+CONFIG_FORWARD_TYPE_NOT_SUPPORTED = "Warning: Forward type \"{0}\" not supported!"
+CONFIG_ADDR_PREFIX_NOT_DECLARED = "Warning: Address prefix \"{0}\" not declared!"
+
+
+class commandBuilder:
+    commandStr = ""
+
+    def append(self, commandStr):
+        self.commandStr = f"{self.commandStr} {commandStr}"
+
+    def build(self):
+        return self.commandStr
+
+    def __init__(self, init):
+        self.commandStr = init
+
+    @staticmethod
+    def isYes(value):
+        return value.lower() in ("yes", "true", "y", "t", "1")
+
+
+class ConfigOptions:
+    hostAddress = "root@localhost"
+    hostPort = "22"
+    localForward = "yes"
+    backgroundDaemon = "yes"
+    socket = "yes"
+    socketPath = "/tmp/ssh-reverse-sock"
+    forwardPortList = list()
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        return setattr(self, key, value)
+
+    def getStartCommand(self):
+        sshCommand = commandBuilder("ssh")
+
+        if commandBuilder.isYes(self.localForward):
+            sshCommand.append("-g")
+
+        if commandBuilder.isYes(self.backgroundDaemon):
+            sshCommand.append("-fN")
+
+        if commandBuilder.isYes(self.socket) and self.socketPath != "":
+            sshCommand.append("-MS")
+            sshCommand.append(self.socketPath)
+
+        for forwardPort in self.forwardPortList:
+            sshCommand.append(forwardPort.toCommand())
+
+        sshCommand.append(self.hostAddress)
+        if self.hostPort != "22":
+            sshCommand.append("-p")
+            sshCommand.append(self.hostPort)
+
+        return sshCommand.build()
+
+    def getStopCommand(self):
+        sshCommand = commandBuilder("ssh")
+
+        if commandBuilder.isYes(self.socket) and self.socketPath != "":
+            sshCommand.append("-S")
+            sshCommand.append(self.socketPath)
+
+        sshCommand.append("-O exit")
+        sshCommand.append(self.hostAddress)
+
+        if self.hostPort != "22":
+            sshCommand.append("-p")
+            sshCommand.append(self.hostPort)
+
+        return sshCommand.build()
+
+
+class Context:
+    stubCommandRun = False
+    currentOptionObj = None
+    currentOptionContext = ""
+    addrPrefixDict = dict()
+
+    def __init__(self):
+        self.currentOptionObj = ConfigOptions()
+
+
+class ExtendedEnum(Enum):
+    @classmethod
+    def list(cls):
+        return [c.value for c in cls]
+
+
+class OPTION_TYPE(ExtendedEnum):
+    PREFERENCE = "Preferences"
+    FORWARDS = "Forwards"
+    ADDR_PREFIX = "AddrPrefix"
+
+
+class ACTION_TYPE(ExtendedEnum):
+    START = "start"
+    STOP = "stop"
+    RESTART = "restart"
+    STATUS = "status"
+    HELP = "help"
+
+
+class ForwardObject:
+    forward_type = "L"
+    forward_port = "0000"
+    forward_range = "0.0.0.0"
+    local_addr = "localhost"
+    local_port = "0000"
+
+    @staticmethod
+    def parseFrom(data):
+        data = data.strip()
+        typeList = data.split(" ")
+        dataList = typeList[1].split(":")
+
+        obj = ForwardObject()
+        obj.forward_type = typeList[0].upper()
+        obj.forward_port = dataList[0]
+        obj.local_port = dataList[2]
+
+        if dataList[1].startswith("&"):
+            try:
+                obj.local_addr = context.addrPrefixDict[dataList[1][1:]]
+            except KeyError:
+                print(CONFIG_ADDR_PREFIX_NOT_DECLARED.format(dataList[1]))
+        else:
+            obj.local_addr = dataList[1]
+        return obj
+
+    def toCommand(self):
+        if not (self.forward_type == "L" or self.forward_type == "R"):
+            print(CONFIG_FORWARD_TYPE_NOT_SUPPORTED.format(self.forward_type))
+        return f"-{self.forward_type} {self.forward_range}:{self.forward_port}:{self.local_addr}:{self.local_port}"
+
+
+def interpretLine(dataLine):
+    def splitPreference(rawData):
+        key = rawData[0:rawData.index("=")].strip()
+        value = rawData[rawData.index("=") + 1:].strip()
+        return [key, value]
+
+    stripLine = dataLine.strip()
+    if stripLine == "" or stripLine.startswith("#"):
+        return
+
+    if stripLine.startswith("$"):
+        contextType = stripLine[1:]
+        if contextType in OPTION_TYPE.list():
+            context.currentOptionContext = contextType
+        else:
+            print(CONFIG_CATEGORY_TYPE_NOT_SUPPORTED.format(contextType))
+        return
+
+    if context.currentOptionContext == OPTION_TYPE.PREFERENCE.value:
+        prefsToSave = splitPreference(stripLine)
+        try:
+            context.currentOptionObj[prefsToSave[0]] = prefsToSave[1]
+        except KeyError:
+            print(CONFIG_PREF_KEY_NOT_SUPPORTED.format(prefsToSave[0]))
+        return
+
+    if context.currentOptionContext == OPTION_TYPE.FORWARDS.value:
+        context.currentOptionObj.forwardPortList.append(ForwardObject.parseFrom(stripLine))
+
+    if context.currentOptionContext == OPTION_TYPE.ADDR_PREFIX.value:
+        addrPrefixData = splitPreference(stripLine)
+        context.addrPrefixDict[addrPrefixData[0]] = addrPrefixData[1]
+
+
+def runCommand(command):
+    if context.stubCommandRun:
+        print(command)
+    else:
+        os.system(command)
+
+
+if sys.argv.__len__() < 2:
+    print(ACTION_TYPE_NOT_SPECIFIED)
+    exit(1)
+
+arg_list = sys.argv
+action_type = arg_list[1]
+
+if action_type not in ACTION_TYPE.list():
+    print(ACTION_TYPE_NOT_SUPPORTED.format(action_type))
+    exit(1)
+elif action_type == ACTION_TYPE.HELP.value:
+    print(help_string)
+    exit(0)
+elif action_type == ACTION_TYPE.STATUS.value:
+    print("Stub!")
+    exit(0)
+
+if arg_list.__len__() < 3:
+    print(CONFIG_FILE_NOT_SPECIFIED)
+    exit(1)
+
+context = Context()
+config_file = arg_list[2]
+
+if not os.path.isfile(config_file):
+    print(CONFIG_FILE_NOT_FOUND)
+
+if "-s" in arg_list or "--stub-test" in arg_list:
+    context.stubCommandRun = True
+
+with open(config_file, "r") as file:
+    for line in file.readlines():
+        interpretLine(line)
+
+    if action_type == ACTION_TYPE.STOP.value or action_type == ACTION_TYPE.RESTART.value:
+        runCommand(context.currentOptionObj.getStopCommand())
+
+    if action_type == ACTION_TYPE.START.value or action_type == ACTION_TYPE.RESTART.value:
+        runCommand(context.currentOptionObj.getStartCommand())
