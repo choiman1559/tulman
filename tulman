@@ -13,7 +13,7 @@ help_string = f"""
  This Script is written for simplify "ssh -R" option, by automatically formatting
  Reverse port, Local Addr, and Local port and run ssh from it.
 
- Usage: "tulman {{start|stop|restart|status|help}} [ARCHIVE extension:conf] (-s|--stub-test) (-e|--use-expr) (-ed|--expr-debug)"
+ Usage: "tulman {{start|stop|restart|status|help}} [ARCHIVE extension:conf] (-s|--stub-test) (-e|--disable-expr) (-ed|--expr-debug)"
 """
 
 ACTION_TYPE_NOT_SPECIFIED = "Error: Action type not specified!"
@@ -105,7 +105,7 @@ class ConfigOptions:
 
 class Context:
     stubCommandRun = False
-    useExpression = False
+    useExpression = True
     useExprDebug = False
 
     currentOptionObj = None
@@ -191,7 +191,6 @@ class RangeObj:
                     if self.includePort.count(i) < 1:
                         self.includePort.append(i)
 
-        self.includePort.sort()
         return self.includePort
 
 
@@ -304,6 +303,7 @@ class ForwardObject:
             return f"-{self.forward_type} {self.forward_range}:{self.forward_port}:{self.local_addr}:{self.local_port}"
         if not self.local_port.__len__() == self.forward_port.__len__():
             print(RANGE_SYNTAX_LOCAL_REMOTE_LEN_NOT_MATCH.format(self.rawData))
+            return ""
 
         cmdBuilder = commandBuilder("")
         for i in range(0, self.forward_port.__len__()):
@@ -383,10 +383,11 @@ if not os.path.isfile(config_file):
 if "-s" in arg_list or "--stub-test" in arg_list:
     context.stubCommandRun = True
 
-if "-e" in arg_list or "--use-expr" in arg_list:
-    context.useExpression = True
-    if "-ed" in arg_list or "--expr-debug" in arg_list:
-        context.useExprDebug = True
+if "-e" in arg_list or "--disable-expr" in arg_list:
+    context.useExpression = False
+
+if "-ed" in arg_list or "--expr-debug" in arg_list:
+    context.useExprDebug = True
 
 with open(config_file, "r") as file:
     for line in file.readlines():
