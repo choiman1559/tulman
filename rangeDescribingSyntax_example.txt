@@ -1,19 +1,23 @@
 PORT RANGE DESCRIBING SYNTAX
-TODO: Not Implemented yet
+Implemented from Tulman version 0.0.2
 
-Example Raw:
-   0~65535,!-,-400,!20-32,(15-21),(!17),!80
-
-Interpreted:
-=> Initial Range 0~65535, Exclude All
-   *1	Include 0~400, Exclude 20~32, Exclude 80,
-   *0	Include 15~21, Exclude 17
+Available Tokens:
+============================================================================
+n             => Select one port, number "n"
+n-            => Select port "n" to 65535
+-m            => Select port "0" to number "m"
+n-m           => Select multiple port, "n" to "m"
+!exp          => Exclude port by using the expressions listed above.
+(exp)         => Assigns weight to specific expressions.
+((exp))       => Gives more weight to certain expressions.
+exp,exp,exp   => Write multiple expressions on one line. Separated by ",".
 
 Application Example:
+============================================================================
    2344:192.168.50.198:22
-   2345:192.168.50.198:3306
-   2346:192.168.50.198:9000
-   2347:192.168.50.198:81
+   2345:192.168.50.198:81
+   2346:192.168.50.198:3306
+   2347:192.168.50.198:9000
 
 Can be changed to:
-   2344~2347,-:192.168.50.198:22,3306,9000,81
+   2344-2347:192.168.50.198:22,81,3306,9000
