@@ -2,6 +2,7 @@
 
 import os
 import sys
+import re
 from enum import Enum
 
 help_string = """
@@ -11,7 +12,7 @@ help_string = """
  This Script is written for simplify "ssh -R" option, by automatically formatting
  Reverse port, Local Addr, and Local port and run ssh from it.
 
- Usage: "tulman {start|stop|restart|status|help} [ARCHIVE extension:conf] (-s|--stub-test)"
+ Usage: "tulman {start|stop|restart|status|help} [ARCHIVE extension:conf] (-s|--stub-test) (-e|--use-expr)"
 """
 
 ACTION_TYPE_NOT_SPECIFIED = "Error: Action type not specified!"
@@ -22,6 +23,11 @@ CONFIG_CATEGORY_TYPE_NOT_SUPPORTED = "WARNING: Configuration category type not s
 CONFIG_PREF_KEY_NOT_SUPPORTED = "WARNING: Configuration preference key not supported: \"{0}\""
 CONFIG_FORWARD_TYPE_NOT_SUPPORTED = "Warning: Forward type \"{0}\" not supported!"
 CONFIG_ADDR_PREFIX_NOT_DECLARED = "Warning: Address prefix \"{0}\" not declared!"
+
+RANGE_SYNTAX_LOCAL_REMOTE_LEN_NOT_MATCH = "Warning: Local and Remote port range expression length is not match: \"{0}\""
+RANGE_SYNTAX_PRIORITY_TOKEN_ILLEGAL = "Warning: Parentheses expression is incorrect: \"{0}\""
+RANGE_SYNTAX_BLANK_EXPRESSION_TOKEN = "Warning: Empty expression token exists: \"{0}\""
+RANGE_SYNTAX_EXPRESSION_NOT_AN_NUMBER = "Warning: Range expression token is not numeric: \"{0}\""
 
 
 class commandBuilder:
@@ -98,6 +104,8 @@ class ConfigOptions:
 
 class Context:
     stubCommandRun = False
+    useExpression = False
+
     currentOptionObj = None
     currentOptionContext = ""
     addrPrefixDict = dict()
@@ -126,12 +134,125 @@ class ACTION_TYPE(ExtendedEnum):
     HELP = "help"
 
 
+class RangeObj:
+    exprList = list()
+    includePort = list()
+
+    @staticmethod
+    def rangeSyntaxParse(data):
+        newObj = RangeObj()
+        syntaxList = data.lower().strip().split(",")
+
+        for singleExpr in syntaxList:
+            if singleExpr == "":
+                print(RANGE_SYNTAX_BLANK_EXPRESSION_TOKEN.format(data))
+                continue
+            if re.search(r"[^0-9\-!()]", singleExpr):
+                print(RANGE_SYNTAX_EXPRESSION_NOT_AN_NUMBER.format(data))
+
+            newObj.exprList.append(RangeExpr.parseSingleExpr(singleExpr.strip()))
+        return RangeObj()
+
+    def interpret(self):
+        priorityAppliedList = list()
+        for exprObj in self.exprList:
+            if priorityAppliedList.__len__() == 0:
+                priorityAppliedList.append(exprObj)
+                continue
+
+            count = 0
+            isAdded = False
+
+            for exprPriObj in priorityAppliedList:
+                if exprObj.priority < exprPriObj.priority:
+                    priorityAppliedList.insert(count, exprObj)
+                    isAdded = True
+                    break
+                count += 1
+
+            if not isAdded:
+                priorityAppliedList.append(exprObj)
+
+        for exprObj in priorityAppliedList:
+            for i in range(exprObj.start, exprObj.end, 1):
+                if exprObj.isExclude:
+                    if self.includePort.count(i) > 0:
+                        self.includePort.remove(i)
+                else:
+                    if self.includePort.count(i) < 1:
+                        self.includePort.append(i)
+
+        self.includePort.sort()
+        return self.includePort
+
+
+class RangeExpr:
+    TOKEN_NOT = "!"
+    TOKEN_RANGE = "-"
+    TOKEN_WEIGHT_START = "("
+    TOKEN_WEIGHT_END = ")"
+
+    priority = 0
+    isExclude = False
+    start = 0
+    end = 65535
+
+    @staticmethod
+    def parseSingleExpr(data):
+        newObj = RangeExpr()
+
+        startCombine = ""
+        endCombine = ""
+        isCombineModEnd = False
+
+        startWeight = 0
+        endWeight = 0
+
+        for charExpr in list(data):
+            if charExpr == RangeExpr.TOKEN_NOT:
+                newObj.isExclude = not newObj.isExclude
+            elif charExpr == RangeExpr.TOKEN_RANGE and startCombine != "":
+                newObj.start = int(startCombine)
+                isCombineModEnd = True
+            elif charExpr == RangeExpr.TOKEN_WEIGHT_START:
+                startWeight += 1
+            elif charExpr == RangeExpr.TOKEN_WEIGHT_END:
+                endWeight += 1
+            else:
+                if isCombineModEnd:
+                    endCombine += charExpr
+                else:
+                    startCombine += charExpr
+
+        if isCombineModEnd:
+            if endCombine != "":
+                newObj.end = int(endCombine)
+        else:
+            if startCombine != "":
+                newObj.start = int(startCombine)
+            if endCombine == "":
+                newObj.end = int(startCombine)
+
+        if startWeight == endWeight:
+            newObj.priority = startWeight
+        else:
+            print(RANGE_SYNTAX_PRIORITY_TOKEN_ILLEGAL.format(data))
+        return newObj
+
+    def toList(self):
+        portRange = list()
+        for i in range(self.start, self.end, 1):
+            portRange.append(i)
+        return portRange
+
+
 class ForwardObject:
+    rawData = ""
     forward_type = "L"
-    forward_port = "0000"
+    forward_port = list()
     forward_range = "0.0.0.0"
     local_addr = "localhost"
-    local_port = "0000"
+    local_port = list()
 
     @staticmethod
     def parseFrom(data):
@@ -140,9 +261,15 @@ class ForwardObject:
         dataList = typeList[1].split(":")
 
         obj = ForwardObject()
+        obj.rawData = data
         obj.forward_type = typeList[0].upper()
-        obj.forward_port = dataList[0]
-        obj.local_port = dataList[2]
+
+        if context.useExpression:
+            obj.forward_port = RangeObj.rangeSyntaxParse(dataList[0]).interpret()
+            obj.local_port = RangeObj.rangeSyntaxParse(dataList[2]).interpret()
+        else:
+            obj.forward_port = dataList[0]
+            obj.local_port = dataList[2]
 
         if dataList[1].startswith("&"):
             try:
@@ -156,7 +283,16 @@ class ForwardObject:
     def toCommand(self):
         if not (self.forward_type == "L" or self.forward_type == "R"):
             print(CONFIG_FORWARD_TYPE_NOT_SUPPORTED.format(self.forward_type))
-        return f"-{self.forward_type} {self.forward_range}:{self.forward_port}:{self.local_addr}:{self.local_port}"
+        if not context.useExpression:
+            return f"-{self.forward_type} {self.forward_range}:{self.forward_port}:{self.local_addr}:{self.local_port}"
+        if not self.local_port.__len__() == self.forward_port.__len__():
+            print(RANGE_SYNTAX_LOCAL_REMOTE_LEN_NOT_MATCH.format(self.rawData))
+
+        cmdBuilder = commandBuilder("")
+        for i in range(0, self.forward_port.__len__()):
+            commandStr = f"-{self.forward_type} {self.forward_range}:{self.forward_port[i]}:{self.local_addr}:{self.local_port[i]}"
+            cmdBuilder.append(commandStr)
+        return cmdBuilder.build().strip()
 
 
 def interpretLine(dataLine):
@@ -229,6 +365,9 @@ if not os.path.isfile(config_file):
 
 if "-s" in arg_list or "--stub-test" in arg_list:
     context.stubCommandRun = True
+
+if "-e" in arg_list or "--use-expr" in arg_list:
+    context.useExpression = True
 
 with open(config_file, "r") as file:
     for line in file.readlines():
