@@ -5,7 +5,7 @@ import sys
 import re
 from enum import Enum
 
-version = "0.0.2"
+version = "1.0.0"
 help_string = f"""
  SSH Reverse Tunneling Configuration Tool
  Version {version} Written By. Choiman1559
@@ -13,22 +13,59 @@ help_string = f"""
  This Script is written for simplify "ssh -R" option, by automatically formatting
  Reverse port, Local Addr, and Local port and run ssh from it.
 
- Usage: "tulman {{start|stop|restart|status|help}} [ARCHIVE extension:conf] (-s|--stub-test) (-e|--disable-expr) (-ed|--expr-debug)"
+ Usage: "tulman {{start|stop|restart|status|help}} [ARCHIVE extension:conf] (-s|--stub-test) (-e|--disable-expr) (-d|--debug)"
 """
 
-ACTION_TYPE_NOT_SPECIFIED = "Error: Action type not specified!"
-ACTION_TYPE_NOT_SUPPORTED = "Error: Action type not supported: \"{0}\""
-CONFIG_FILE_NOT_SPECIFIED = "Error: Configuration file not specified!"
-CONFIG_FILE_NOT_FOUND = "Error: Configuration file not found or readable!"
-CONFIG_CATEGORY_TYPE_NOT_SUPPORTED = "WARNING: Configuration category type not supported: \"{0}\""
-CONFIG_PREF_KEY_NOT_SUPPORTED = "WARNING: Configuration preference key not supported: \"{0}\""
-CONFIG_FORWARD_TYPE_NOT_SUPPORTED = "Warning: Forward type \"{0}\" not supported!"
-CONFIG_ADDR_PREFIX_NOT_DECLARED = "Warning: Address prefix \"{0}\" not declared!"
 
-RANGE_SYNTAX_LOCAL_REMOTE_LEN_NOT_MATCH = "Warning: Local and Remote port range expression length is not match: \"{0}\""
-RANGE_SYNTAX_PRIORITY_TOKEN_ILLEGAL = "Warning: Parentheses expression is incorrect: \"{0}\""
-RANGE_SYNTAX_BLANK_EXPRESSION_TOKEN = "Warning: Empty expression token exists: \"{0}\""
-RANGE_SYNTAX_EXPRESSION_NOT_AN_NUMBER = "Warning: Range expression token is not numeric: \"{0}\""
+class Log:
+    LEVEL_ERROR = "Error"
+    LEVEL_WARNING = "Warning"
+    LEVEL_DEBUG = "Debug"
+    LEVEL_INFO = "Info"
+
+    @staticmethod
+    def e(message, needPrintContext=True):
+        Log.printLog(Log.LEVEL_ERROR, message, needPrintContext)
+
+    @staticmethod
+    def w(message, needPrintContext=True):
+        Log.printLog(Log.LEVEL_WARNING, message, needPrintContext)
+
+    @staticmethod
+    def d(message, needPrintContext=True):
+        Log.printLog(Log.LEVEL_DEBUG, message, needPrintContext)
+
+    @staticmethod
+    def i(message, needPrintContext=True):
+        Log.printLog(Log.LEVEL_INFO, message, needPrintContext)
+
+    @staticmethod
+    def printLog(level, message, needPrintContext=True):
+        printLine = f"{level}: {message}"
+        if needPrintContext:
+            printLine += f" (at {Context.getLast(context.currentProcessFile)} line {Context.getLast(context.currentLineNumber)})"
+        print(printLine)
+
+
+ACTION_TYPE_NOT_SPECIFIED = "Action type not specified!"
+ACTION_TYPE_NOT_SUPPORTED = "Action type not supported: \"{0}\""
+CONFIG_FILE_NOT_SPECIFIED = "Configuration file not specified!"
+CONFIG_FILE_NOT_FOUND = "Configuration file not found or readable!"
+CONFIG_CATEGORY_TYPE_NOT_SUPPORTED = "Configuration category type not supported: \"{0}\""
+CONFIG_PREF_KEY_NOT_SUPPORTED = "Configuration preference key not supported: \"{0}\""
+CONFIG_FORWARD_TYPE_NOT_SUPPORTED = "Forward type \"{0}\" not supported!"
+
+PREFIX_KEY_NOT_DECLARED = "Prefix key \"{0}\" not declared!"
+PREFIX_TYPE_UNKNOWN = "Unknown Prefix type \"{0}\", Using type \"auto\" instead..."
+PREFIX_TYPE_NOT_SPECIFIED = "Prefix {0} is not specified type! Ignoring this prefix..."
+PREFIX_TYPE_UNMATCH = "Unmatch-type prefix used in this context: {0} type used but in {0} context!"
+PREFIX_NOT_FOUND_REFERENCE = "Prefix key \"{0}\" referenced by \"{1}\" is not declared!"
+PREFIX_ARGUMENT_COUNT_UNMATCH = "Prefix \"{0}\" has {1} wildcard(s), but {2} argument(s) has given!"
+
+RANGE_SYNTAX_LOCAL_REMOTE_LEN_NOT_MATCH = "Local and Remote port range expression length is not match: \"{0}\""
+RANGE_SYNTAX_PRIORITY_TOKEN_ILLEGAL = "Parentheses expression is incorrect: \"{0}\""
+RANGE_SYNTAX_BLANK_EXPRESSION_TOKEN = "Empty expression token exists: \"{0}\""
+RANGE_SYNTAX_EXPRESSION_NOT_AN_NUMBER = "Range expression token is not numeric: \"{0}\""
 
 
 class commandBuilder:
@@ -56,6 +93,8 @@ class ConfigOptions:
     socket = "yes"
     socketPath = "/tmp/ssh-reverse-sock"
     forwardPortList = list()
+    useAutoSSH = "no"
+    autoSshEchoPort = 20000
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -64,17 +103,21 @@ class ConfigOptions:
         return setattr(self, key, value)
 
     def getStartCommand(self):
-        sshCommand = commandBuilder("ssh")
+        if commandBuilder.isYes(self.useAutoSSH):
+            sshCommand = commandBuilder("autossh")
+            sshCommand.append(f"-M {self.autoSshEchoPort} -o \"ServerAliveInterval 30\" -o \"ServerAliveCountMax 3\"")
+        else:
+            sshCommand = commandBuilder("ssh")
+
+            if commandBuilder.isYes(self.socket) and self.socketPath != "":
+                sshCommand.append("-MS")
+                sshCommand.append(self.socketPath)
 
         if commandBuilder.isYes(self.localForward):
             sshCommand.append("-g")
 
         if commandBuilder.isYes(self.backgroundDaemon):
             sshCommand.append("-fN")
-
-        if commandBuilder.isYes(self.socket) and self.socketPath != "":
-            sshCommand.append("-MS")
-            sshCommand.append(self.socketPath)
 
         for forwardPort in self.forwardPortList:
             sshCommand.append(forwardPort.toCommand())
@@ -87,11 +130,14 @@ class ConfigOptions:
         return sshCommand.build()
 
     def getStopCommand(self):
-        sshCommand = commandBuilder("ssh")
+        if commandBuilder.isYes(self.useAutoSSH):
+            sshCommand = commandBuilder("killall autossh & ssh")
+        else:
+            sshCommand = commandBuilder("ssh")
 
-        if commandBuilder.isYes(self.socket) and self.socketPath != "":
-            sshCommand.append("-S")
-            sshCommand.append(self.socketPath)
+            if commandBuilder.isYes(self.socket) and self.socketPath != "":
+                sshCommand.append("-S")
+                sshCommand.append(self.socketPath)
 
         sshCommand.append("-O exit")
         sshCommand.append(self.hostAddress)
@@ -108,12 +154,37 @@ class Context:
     useExpression = True
     useExprDebug = False
 
+    currentProcessFile = list()
+    currentLineNumber = list()
+    currentOptionContext = list()
+    currentAliasList = list()
     currentOptionObj = None
-    currentOptionContext = ""
-    addrPrefixDict = dict()
 
-    def __init__(self):
+    addrPrefixDict = dict()
+    portPrefixDict = dict()
+
+    @staticmethod
+    def getLast(objList):
+        return objList[objList.__len__() - 1]
+
+    @classmethod
+    def setLast(cls, currentObj, contextType):
+        currentObj[currentObj.__len__() - 1] = contextType
+
+    def __init__(self, fileName):
         self.currentOptionObj = ConfigOptions()
+
+        self.currentLineNumber = list()
+        self.currentLineNumber.append(1)
+
+        self.currentProcessFile = list()
+        self.currentProcessFile.append(fileName)
+
+        self.currentOptionContext = list()
+        self.currentOptionContext.append("")
+
+        self.currentAliasList = list()
+        self.currentAliasList.append("")
 
 
 class ExtendedEnum(Enum):
@@ -125,7 +196,8 @@ class ExtendedEnum(Enum):
 class OPTION_TYPE(ExtendedEnum):
     PREFERENCE = "Preferences"
     FORWARDS = "Forwards"
-    ADDR_PREFIX = "AddrPrefix"
+    PREFIXES = "Prefixes"
+    INCLUDES = "Includes"
 
 
 class ACTION_TYPE(ExtendedEnum):
@@ -134,6 +206,272 @@ class ACTION_TYPE(ExtendedEnum):
     RESTART = "restart"
     STATUS = "status"
     HELP = "help"
+
+
+class PrefixType(ExtendedEnum):
+    PREFIX_TYPE_ADDR = "addr"
+    PREFIX_TYPE_PORT = "port"
+    PREFIX_TYPE_AUTO = "auto"
+    
+    
+class PrefixToken:
+    PREFIX_TOKEN_WILDCARD = "*"
+    PREFIX_TOKEN_REFERENCE = "&"
+    PREFIX_TOKEN_ARGUMENT_START = "("
+    PREFIX_TOKEN_ARGUMENT_END = ")"
+    PREFIX_TOKEN_ARGUMENT_AND = ","
+    PREFIX_TOKEN_ARGUMENT_NOTHING = "~"
+    PREFIX_TOKEN_CLASS_IDENTIFIER = "."
+    PREFIX_TOKEN_TYPE_IDENTIFIER = " "
+
+
+class PrefixAddrExpr:
+    
+    rawData = ""
+    isInterpreted = False
+    overrideKeyCombine = ""
+    argsCombine = list()
+    finalData = ""
+
+    def __init__(self):
+        self.rawData = ""
+        self.isInterpreted = False
+        self.overrideKeyCombine = ""
+        self.argsCombine = list()
+        self.finalData = ""
+
+    def interpret(self):
+        prefixOverrideObj = None
+
+        if self.overrideKeyCombine in context.addrPrefixDict.keys():
+            prefixOverrideObj = context.addrPrefixDict[self.overrideKeyCombine]
+        else:
+            Log.w(PREFIX_NOT_FOUND_REFERENCE.format(self.overrideKeyCombine, self.rawData))
+
+        if prefixOverrideObj is not None:
+            if self.argsCombine.__len__() != prefixOverrideObj.prefixCountWildcard:
+                Log.w(PREFIX_ARGUMENT_COUNT_UNMATCH.format(self.overrideKeyCombine, prefixOverrideObj.prefixCountWildcard, self.argsCombine.__len__()))
+
+            if self.argsCombine.__len__() >= prefixOverrideObj.prefixCountWildcard:
+                overrideWildcardCount = 0
+                finalDataCombine = ""
+
+                for charExpr in list(prefixOverrideObj.prefixFinalData):
+                    if charExpr == PrefixToken.PREFIX_TOKEN_WILDCARD:
+                        finalDataCombine += self.argsCombine[overrideWildcardCount]
+                        overrideWildcardCount += 1
+                    else:
+                        finalDataCombine += charExpr
+                self.finalData = finalDataCombine
+        return self.finalData
+        
+    @staticmethod
+    def parseFrom(data):
+        newObj = PrefixAddrExpr()
+        newObj.rawData = data.strip()
+
+        isKeyStart = False
+        isArgStart = False
+        argCombineCache = ""
+
+        for charExpr in list(newObj.rawData):
+            if charExpr == PrefixToken.PREFIX_TOKEN_REFERENCE:
+                isKeyStart = True
+                continue
+            elif charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_START:
+                isKeyStart = False
+                isArgStart = True
+                continue
+            elif (isArgStart and
+                  (charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_AND
+                   or charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_END)):
+                newObj.argsCombine.append(argCombineCache.strip())
+                argCombineCache = ""
+                continue
+            elif charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_NOTHING:
+                newObj.argsCombine.append("")
+                argCombineCache = ""
+                continue
+
+            if isKeyStart:
+                newObj.overrideKeyCombine += charExpr
+            elif isArgStart:
+                argCombineCache += charExpr
+
+        newObj.overrideKeyCombine = PrefixObj.getIncludeInnerKey(newObj.overrideKeyCombine.strip())
+        return newObj
+
+    def toString(self):
+        return f"{self.rawData}, {self.isInterpreted}, {self.overrideKeyCombine}, {self.argsCombine}, {self.finalData}"
+
+
+class PrefixPortExpr:
+
+    interpretedList = list()
+    finalString = ""
+
+    def __init__(self):
+        super().__init__()
+        self.interpretedList = list()
+        self.finalString = ""
+
+    @staticmethod
+    def parseFrom(data):
+        newObj = PrefixPortExpr()
+        newObj.rawData = data.strip()
+
+        portExprList = newObj.rawData.split(PrefixToken.PREFIX_TOKEN_ARGUMENT_AND)
+        for portExprSingle in portExprList:
+            if portExprSingle.count(PrefixToken.PREFIX_TOKEN_REFERENCE) < 1:
+                newObj.interpretedList.append(portExprSingle)
+                continue
+
+            isKeyStart = False
+            keyCombineCache = ""
+            strCombineCache = ""
+
+            for charExpr in list(portExprSingle):
+                if charExpr == PrefixToken.PREFIX_TOKEN_REFERENCE:
+                    isKeyStart = True
+                    continue
+                elif isKeyStart and (charExpr == RangeExpr.TOKEN_NOT or
+                                     charExpr == RangeExpr.TOKEN_RANGE or
+                                     charExpr == RangeExpr.TOKEN_WEIGHT_END):
+                    isKeyStart = False
+                    prefixOverrideObj = None
+                    keyCombineCache = (PrefixObj.getIncludeInnerKey(keyCombineCache))
+
+                    if keyCombineCache in context.portPrefixDict.keys():
+                        prefixOverrideObj = context.portPrefixDict[keyCombineCache]
+                    else:
+                        Log.w(PREFIX_NOT_FOUND_REFERENCE.format(keyCombineCache, data))
+                    if prefixOverrideObj is not None:
+                        strCombineCache += prefixOverrideObj.prefixFinalData
+                    continue
+
+                if isKeyStart:
+                    keyCombineCache += charExpr
+                else:
+                    strCombineCache += charExpr
+
+            if isKeyStart:
+                prefixOverrideObj = None
+                keyCombineCache = PrefixObj.getIncludeInnerKey(keyCombineCache)
+
+                if keyCombineCache in context.portPrefixDict.keys():
+                    prefixOverrideObj = context.portPrefixDict[keyCombineCache]
+                else:
+                    Log.w(PREFIX_NOT_FOUND_REFERENCE.format(keyCombineCache, data))
+                if prefixOverrideObj is not None:
+                    strCombineCache += prefixOverrideObj.prefixFinalData
+
+            newObj.interpretedList.append(strCombineCache)
+        return newObj
+
+    def interpret(self):
+        for exprLines in self.interpretedList:
+            self.finalString += f"{exprLines},"
+        return self.finalString[:-1]
+
+    def toString(self):
+        return f"{self.interpretedList}, {self.finalString}"
+
+
+class PrefixObj:
+
+    prefixKey = ""
+    prefixRawData = ""
+    prefixFinalData = ""
+    prefixType = PrefixType.PREFIX_TYPE_AUTO
+    prefixCountWildcard = 0
+
+    @staticmethod
+    def getIncludeInnerKey(rawKey):
+        if context.currentAliasList.__len__() > 1 > rawKey.count(PrefixToken.PREFIX_TOKEN_CLASS_IDENTIFIER):
+            return f"{Context.getLast(context.currentAliasList)}.{rawKey}"
+        else:
+            return rawKey
+
+    @staticmethod
+    def splitPreference(rawData, separator="="):
+        key = rawData[0:rawData.index(separator)].strip()
+        value = rawData[rawData.index(separator) + 1:].strip()
+        return [key, value]
+
+    @staticmethod
+    def determineType(data):
+
+        isKeyStart = False
+        keyCombine = ""
+
+        for charExpr in list(data):
+            if charExpr == PrefixToken.PREFIX_TOKEN_REFERENCE:
+                isKeyStart = True
+                continue
+            elif charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_START:
+                isKeyStart = False
+                continue
+            elif (isKeyStart and
+                  (charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_AND
+                   or charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_END)):
+                break
+
+            if isKeyStart:
+                keyCombine += charExpr
+
+        estimateKey = PrefixObj.getIncludeInnerKey(keyCombine.strip())
+        if estimateKey in context.addrPrefixDict.keys():
+            return PrefixType.PREFIX_TYPE_ADDR
+        elif estimateKey in context.portPrefixDict.keys():
+            return PrefixType.PREFIX_TYPE_PORT
+        else:
+            return PrefixType.PREFIX_TYPE_AUTO
+
+    @staticmethod
+    def buildFrom(data):
+        newObj = PrefixObj()
+        dataArray = PrefixObj.splitPreference(data)
+
+        newObj.prefixType = PrefixType.PREFIX_TYPE_AUTO
+        newObj.prefixRawData = dataArray[1]
+        newObj.prefixCountWildcard = dataArray[1].count(PrefixToken.PREFIX_TOKEN_WILDCARD)
+
+        if dataArray[0].strip().count(PrefixToken.PREFIX_TOKEN_TYPE_IDENTIFIER) > 0:
+            keyTypeArray = dataArray[0].split(PrefixToken.PREFIX_TOKEN_TYPE_IDENTIFIER)
+            if keyTypeArray[0] not in PrefixType.list():
+                Log.w(PREFIX_TYPE_UNKNOWN.format(keyTypeArray[0]))
+            else:
+                newObj.prefixType = PrefixType(keyTypeArray[0])
+                newObj.prefixKey = keyTypeArray[1]
+        else:
+            newObj.prefixKey = dataArray[0]
+            
+        if newObj.prefixType == PrefixType.PREFIX_TYPE_AUTO:
+            newObj.prefixType = PrefixObj.determineType(newObj.prefixRawData)
+            if newObj.prefixType == PrefixType.PREFIX_TYPE_AUTO:
+                Log.w(PREFIX_TYPE_NOT_SPECIFIED.format(newObj.prefixRawData))
+
+        if newObj.prefixRawData.count(PrefixToken.PREFIX_TOKEN_REFERENCE) > 0:
+            prefixExprObj = None
+
+            if newObj.prefixType == PrefixType.PREFIX_TYPE_ADDR:
+                prefixExprObj = PrefixAddrExpr.parseFrom(newObj.prefixRawData)
+            elif newObj.prefixType == PrefixType.PREFIX_TYPE_PORT:
+                prefixExprObj = PrefixPortExpr.parseFrom(newObj.prefixRawData)
+            elif newObj.prefixType == PrefixType.PREFIX_TYPE_AUTO:
+                Log.w(PREFIX_TYPE_NOT_SPECIFIED.format(data))
+
+            if prefixExprObj is not None:
+                newObj.prefixFinalData = prefixExprObj.interpret()
+                if context.useExprDebug:
+                    Log.d(prefixExprObj.toString())
+        else:
+            newObj.prefixFinalData = newObj.prefixRawData
+
+        return newObj
+
+    def toString(self):
+        return f"{self.prefixKey}, {self.prefixRawData}, {self.prefixFinalData}, {self.prefixType}, {self.prefixCountWildcard}"
 
 
 class RangeObj:
@@ -146,20 +484,24 @@ class RangeObj:
 
     @staticmethod
     def rangeSyntaxParse(data):
+        if data.count(PrefixToken.PREFIX_TOKEN_REFERENCE) > 0:
+            prefixExpr = PrefixPortExpr.parseFrom(data)
+            data = prefixExpr.interpret()
+
         newObj = RangeObj()
-        syntaxList = data.lower().strip().split(",")
+        syntaxList = data.strip().split(",")
 
         for singleExpr in syntaxList:
             if singleExpr == "":
-                print(RANGE_SYNTAX_BLANK_EXPRESSION_TOKEN.format(data))
+                Log.w(RANGE_SYNTAX_BLANK_EXPRESSION_TOKEN.format(data))
                 continue
             if re.search(r"[^0-9\-!()]", singleExpr):
-                print(RANGE_SYNTAX_EXPRESSION_NOT_AN_NUMBER.format(data))
+                Log.w(RANGE_SYNTAX_EXPRESSION_NOT_AN_NUMBER.format(singleExpr))
 
             singleExprObj = RangeExpr.parseSingleExpr(singleExpr.strip())
             newObj.exprList.append(singleExprObj)
             if context.useExprDebug:
-                print("Info:", syntaxList, singleExpr, singleExprObj.toString())
+                Log.d("{0} {1} {2}".format(syntaxList, singleExpr, singleExprObj.toString()))
         return newObj
 
     def interpret(self):
@@ -245,7 +587,7 @@ class RangeExpr:
         if startWeight == endWeight:
             newObj.priority = startWeight
         else:
-            print(RANGE_SYNTAX_PRIORITY_TOKEN_ILLEGAL.format(data))
+            Log.w(RANGE_SYNTAX_PRIORITY_TOKEN_ILLEGAL.format(data))
         return newObj
 
     def toList(self):
@@ -269,7 +611,7 @@ class ForwardObject:
     @staticmethod
     def parseFrom(data):
         data = data.strip()
-        typeList = data.split(" ")
+        typeList = PrefixObj.splitPreference(data, PrefixToken.PREFIX_TOKEN_TYPE_IDENTIFIER)
         dataList = typeList[1].split(":")
 
         obj = ForwardObject()
@@ -281,28 +623,26 @@ class ForwardObject:
             obj.local_port = RangeObj.rangeSyntaxParse(dataList[2]).interpret()
 
             if context.useExprDebug:
-                print("Info: fw =>", obj.forward_port)
-                print("Info: lc =>", obj.local_port)
+                Log.d("fw => {0}".format(obj.forward_port))
+                Log.d("lc => {0}".format(obj.local_port))
         else:
             obj.forward_port = dataList[0]
             obj.local_port = dataList[2]
 
-        if dataList[1].startswith("&"):
-            try:
-                obj.local_addr = context.addrPrefixDict[dataList[1][1:]]
-            except KeyError:
-                print(CONFIG_ADDR_PREFIX_NOT_DECLARED.format(dataList[1]))
+        if dataList[1].startswith(PrefixToken.PREFIX_TOKEN_REFERENCE):
+            prefixExpr = PrefixAddrExpr.parseFrom(dataList[1])
+            obj.local_addr = prefixExpr.interpret()
         else:
             obj.local_addr = dataList[1]
         return obj
 
     def toCommand(self):
         if not (self.forward_type == "L" or self.forward_type == "R"):
-            print(CONFIG_FORWARD_TYPE_NOT_SUPPORTED.format(self.forward_type))
+            Log.w(CONFIG_FORWARD_TYPE_NOT_SUPPORTED.format(self.forward_type))
         if not context.useExpression:
             return f"-{self.forward_type} {self.forward_range}:{self.forward_port}:{self.local_addr}:{self.local_port}"
         if not self.local_port.__len__() == self.forward_port.__len__():
-            print(RANGE_SYNTAX_LOCAL_REMOTE_LEN_NOT_MATCH.format(self.rawData))
+            Log.w(RANGE_SYNTAX_LOCAL_REMOTE_LEN_NOT_MATCH.format(self.rawData))
             return ""
 
         cmdBuilder = commandBuilder("")
@@ -312,56 +652,86 @@ class ForwardObject:
         return cmdBuilder.build().strip()
 
 
-def interpretLine(dataLine):
-    def splitPreference(rawData):
-        key = rawData[0:rawData.index("=")].strip()
-        value = rawData[rawData.index("=") + 1:].strip()
-        return [key, value]
+def runIncludes(dataLine):
+    dataLineList = PrefixObj.splitPreference(dataLine.strip())
+    includeAlias = dataLineList[0].strip()
+    includeFile = dataLineList[1].strip()
 
+    context.currentLineNumber.append(1)
+    context.currentProcessFile.append(includeFile)
+    context.currentOptionContext.append("")
+    context.currentAliasList.append(includeAlias)
+
+    with open(includeFile, "r") as includeFileObj:
+        for includeLine in includeFileObj.readlines():
+            interpretLine(includeLine, True, includeAlias)
+            context.currentLineNumber[context.currentLineNumber.__len__() - 1] += 1
+
+    context.currentLineNumber.pop()
+    context.currentProcessFile.pop()
+    context.currentOptionContext.pop()
+    context.currentAliasList.pop()
+
+
+def interpretLine(dataLine, isExternalInclude=False, includeAlias=""):
     stripLine = dataLine.strip()
     if stripLine == "" or stripLine.startswith("#"):
         return
+    stripLine = stripLine.split("#")[0].strip()
 
     if stripLine.startswith("$"):
         contextType = stripLine[1:]
         if contextType in OPTION_TYPE.list():
-            context.currentOptionContext = contextType
+            Context.setLast(context.currentOptionContext, contextType)
         else:
-            print(CONFIG_CATEGORY_TYPE_NOT_SUPPORTED.format(contextType))
+            Log.w(CONFIG_CATEGORY_TYPE_NOT_SUPPORTED.format(contextType))
         return
 
-    if context.currentOptionContext == OPTION_TYPE.PREFERENCE.value:
-        prefsToSave = splitPreference(stripLine)
+    if not isExternalInclude and Context.getLast(context.currentOptionContext) == OPTION_TYPE.PREFERENCE.value:
+        prefsToSave = PrefixObj.splitPreference(stripLine)
         try:
             context.currentOptionObj[prefsToSave[0]] = prefsToSave[1]
         except KeyError:
-            print(CONFIG_PREF_KEY_NOT_SUPPORTED.format(prefsToSave[0]))
+            Log.w(CONFIG_PREF_KEY_NOT_SUPPORTED.format(prefsToSave[0]))
         return
 
-    if context.currentOptionContext == OPTION_TYPE.FORWARDS.value:
+    if Context.getLast(context.currentOptionContext) == OPTION_TYPE.INCLUDES.value:
+        runIncludes(stripLine)
+
+    if Context.getLast(context.currentOptionContext) == OPTION_TYPE.FORWARDS.value:
         context.currentOptionObj.forwardPortList.append(ForwardObject.parseFrom(stripLine))
 
-    if context.currentOptionContext == OPTION_TYPE.ADDR_PREFIX.value:
-        addrPrefixData = splitPreference(stripLine)
-        context.addrPrefixDict[addrPrefixData[0]] = addrPrefixData[1]
+    if Context.getLast(context.currentOptionContext) == OPTION_TYPE.PREFIXES.value:
+        prefixData = PrefixObj.buildFrom(stripLine)
+        if context.useExprDebug:
+            Log.d(prefixData.toString())
+
+        prefixKey = prefixData.prefixKey
+        if isExternalInclude:
+            prefixKey = f"{includeAlias}.{prefixKey}"
+
+        if prefixData.prefixType == PrefixType.PREFIX_TYPE_ADDR:
+            context.addrPrefixDict[prefixKey] = prefixData
+        elif prefixData.prefixType == PrefixType.PREFIX_TYPE_PORT:
+            context.portPrefixDict[prefixKey] = prefixData
 
 
 def runCommand(command):
     if context.stubCommandRun:
-        print(command)
+        Log.i(command, False)
     else:
         os.system(command)
 
 
 if sys.argv.__len__() < 2:
-    print(ACTION_TYPE_NOT_SPECIFIED)
+    Log.e(ACTION_TYPE_NOT_SPECIFIED)
     exit(1)
 
 arg_list = sys.argv
 action_type = arg_list[1]
 
 if action_type not in ACTION_TYPE.list():
-    print(ACTION_TYPE_NOT_SUPPORTED.format(action_type))
+    Log.e(ACTION_TYPE_NOT_SUPPORTED.format(action_type))
     exit(1)
 elif action_type == ACTION_TYPE.HELP.value:
     print(help_string)
@@ -371,14 +741,14 @@ elif action_type == ACTION_TYPE.STATUS.value:
     exit(0)
 
 if arg_list.__len__() < 3:
-    print(CONFIG_FILE_NOT_SPECIFIED)
+    Log.e(CONFIG_FILE_NOT_SPECIFIED)
     exit(1)
 
-context = Context()
 config_file = arg_list[2]
+context = Context(config_file)
 
 if not os.path.isfile(config_file):
-    print(CONFIG_FILE_NOT_FOUND)
+    Log.e(CONFIG_FILE_NOT_FOUND)
 
 if "-s" in arg_list or "--stub-test" in arg_list:
     context.stubCommandRun = True
@@ -386,12 +756,13 @@ if "-s" in arg_list or "--stub-test" in arg_list:
 if "-e" in arg_list or "--disable-expr" in arg_list:
     context.useExpression = False
 
-if "-ed" in arg_list or "--expr-debug" in arg_list:
+if "-d" in arg_list or "--debug" in arg_list:
     context.useExprDebug = True
 
 with open(config_file, "r") as file:
     for line in file.readlines():
         interpretLine(line)
+        context.currentLineNumber[0] += 1
 
     if action_type == ACTION_TYPE.STOP.value or action_type == ACTION_TYPE.RESTART.value:
         runCommand(context.currentOptionObj.getStopCommand())

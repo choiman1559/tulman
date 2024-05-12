@@ -12,12 +12,13 @@ n-m           => Select multiple port, "n" to "m"
 ((exp))       => Gives more weight to certain expressions.
 exp,exp,exp   => Write multiple expressions on one line. Separated by ",".
 
-Application Example:
+For Example,
+These four forwarding ranges can be abbreviated as follows:
 ============================================================================
    2344:192.168.50.198:22
    2345:192.168.50.198:3306
    2346:192.168.50.198:9000
    2347:192.168.50.198:81
 
-Can be changed to:
+Can be abbreviated to:
    2344-2347:192.168.50.198:22,3306,9000,81
