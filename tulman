@@ -43,7 +43,7 @@ class Log:
     def printLog(level, message, needPrintContext=True):
         printLine = f"{level}: {message}"
         if needPrintContext:
-            printLine += f" (at {Context.getLast(context.currentProcessFile)} line {Context.getLast(context.currentLineNumber)})"
+            printLine += f" (at {Context.getLast(context.stackList).currentProcessFile} line {Context.getLast(context.stackList).currentLineNumber})"
         print(printLine)
 
 
@@ -150,14 +150,17 @@ class ConfigOptions:
 
 
 class Context:
+    class ContextStack:
+        currentProcessFile = ""
+        currentLineNumber = 1
+        currentOptionContext = ""
+        currentAlias = ""
+
     stubCommandRun = False
     useExpression = True
     useExprDebug = False
 
-    currentProcessFile = list()
-    currentLineNumber = list()
-    currentOptionContext = list()
-    currentAliasList = list()
+    stackList = None
     currentOptionObj = None
 
     addrPrefixDict = dict()
@@ -173,18 +176,15 @@ class Context:
 
     def __init__(self, fileName):
         self.currentOptionObj = ConfigOptions()
+        self.stackList = list()
+        initializeStack = Context.ContextStack()
 
-        self.currentLineNumber = list()
-        self.currentLineNumber.append(1)
+        initializeStack.currentLineNumber = 1
+        initializeStack.currentProcessFile = fileName
+        initializeStack.currentOptionContext = ""
+        initializeStack.currentAliasList = ""
 
-        self.currentProcessFile = list()
-        self.currentProcessFile.append(fileName)
-
-        self.currentOptionContext = list()
-        self.currentOptionContext.append("")
-
-        self.currentAliasList = list()
-        self.currentAliasList.append("")
+        self.stackList.append(initializeStack)
 
 
 class ExtendedEnum(Enum):
@@ -387,8 +387,8 @@ class PrefixObj:
 
     @staticmethod
     def getIncludeInnerKey(rawKey):
-        if context.currentAliasList.__len__() > 1 > rawKey.count(PrefixToken.PREFIX_TOKEN_CLASS_IDENTIFIER):
-            return f"{Context.getLast(context.currentAliasList)}.{rawKey}"
+        if context.stackList.__len__() > 1 > rawKey.count(PrefixToken.PREFIX_TOKEN_CLASS_IDENTIFIER):
+            return f"{Context.getLast(context.stackList).currentAliasList}.{rawKey}"
         else:
             return rawKey
 
@@ -657,20 +657,19 @@ def runIncludes(dataLine):
     includeAlias = dataLineList[0].strip()
     includeFile = dataLineList[1].strip()
 
-    context.currentLineNumber.append(1)
-    context.currentProcessFile.append(includeFile)
-    context.currentOptionContext.append("")
-    context.currentAliasList.append(includeAlias)
+    currentStack = Context.ContextStack()
+    currentStack.currentLineNumber = 1
+    currentStack.currentProcessFile = includeFile
+    currentStack.currentOptionContext = ""
+    currentStack.currentAliasList = includeAlias
+    context.stackList.append(currentStack)
 
     with open(includeFile, "r") as includeFileObj:
         for includeLine in includeFileObj.readlines():
             interpretLine(includeLine, True, includeAlias)
-            context.currentLineNumber[context.currentLineNumber.__len__() - 1] += 1
+            context.stackList[context.stackList.__len__() - 1].currentLineNumber += 1
 
-    context.currentLineNumber.pop()
-    context.currentProcessFile.pop()
-    context.currentOptionContext.pop()
-    context.currentAliasList.pop()
+    context.stackList.pop()
 
 
 def interpretLine(dataLine, isExternalInclude=False, includeAlias=""):
@@ -682,12 +681,14 @@ def interpretLine(dataLine, isExternalInclude=False, includeAlias=""):
     if stripLine.startswith("$"):
         contextType = stripLine[1:]
         if contextType in OPTION_TYPE.list():
-            Context.setLast(context.currentOptionContext, contextType)
+            context.stackList[context.stackList.__len__() - 1].currentOptionContext = contextType
         else:
             Log.w(CONFIG_CATEGORY_TYPE_NOT_SUPPORTED.format(contextType))
         return
 
-    if not isExternalInclude and Context.getLast(context.currentOptionContext) == OPTION_TYPE.PREFERENCE.value:
+    currentContext = Context.getLast(context.stackList).currentOptionContext
+
+    if not isExternalInclude and currentContext == OPTION_TYPE.PREFERENCE.value:
         prefsToSave = PrefixObj.splitPreference(stripLine)
         try:
             context.currentOptionObj[prefsToSave[0]] = prefsToSave[1]
@@ -695,13 +696,13 @@ def interpretLine(dataLine, isExternalInclude=False, includeAlias=""):
             Log.w(CONFIG_PREF_KEY_NOT_SUPPORTED.format(prefsToSave[0]))
         return
 
-    if Context.getLast(context.currentOptionContext) == OPTION_TYPE.INCLUDES.value:
+    if currentContext == OPTION_TYPE.INCLUDES.value:
         runIncludes(stripLine)
 
-    if Context.getLast(context.currentOptionContext) == OPTION_TYPE.FORWARDS.value:
+    if currentContext == OPTION_TYPE.FORWARDS.value:
         context.currentOptionObj.forwardPortList.append(ForwardObject.parseFrom(stripLine))
 
-    if Context.getLast(context.currentOptionContext) == OPTION_TYPE.PREFIXES.value:
+    if currentContext == OPTION_TYPE.PREFIXES.value:
         prefixData = PrefixObj.buildFrom(stripLine)
         if context.useExprDebug:
             Log.d(prefixData.toString())
@@ -762,7 +763,7 @@ if "-d" in arg_list or "--debug" in arg_list:
 with open(config_file, "r") as file:
     for line in file.readlines():
         interpretLine(line)
-        context.currentLineNumber[0] += 1
+        context.stackList[0].currentLineNumber += 1
 
     if action_type == ACTION_TYPE.STOP.value or action_type == ACTION_TYPE.RESTART.value:
         runCommand(context.currentOptionObj.getStopCommand())
