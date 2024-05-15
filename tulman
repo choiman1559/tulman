@@ -5,7 +5,7 @@ import sys
 import re
 from enum import Enum
 
-version = "1.0.0"
+version = "1.0.1"
 help_string = f"""
  SSH Reverse Tunneling Configuration Tool
  Version {version} Written By. Choiman1559
@@ -49,13 +49,16 @@ class Log:
 
 ACTION_TYPE_NOT_SPECIFIED = "Action type not specified!"
 ACTION_TYPE_NOT_SUPPORTED = "Action type not supported: \"{0}\""
+
 CONFIG_FILE_NOT_SPECIFIED = "Configuration file not specified!"
 CONFIG_FILE_NOT_FOUND = "Configuration file not found or readable!"
 CONFIG_CATEGORY_TYPE_NOT_SUPPORTED = "Configuration category type not supported: \"{0}\""
 CONFIG_PREF_KEY_NOT_SUPPORTED = "Configuration preference key not supported: \"{0}\""
 CONFIG_FORWARD_TYPE_NOT_SUPPORTED = "Forward type \"{0}\" not supported!"
 
-PREFIX_KEY_NOT_DECLARED = "Prefix key \"{0}\" not declared!"
+CONFIG_FORWARD_PORT_DUPLICATE = "Possible {0} port duplicate: {1}"
+CONFIG_FORWARD_PORT_DUPLICATE_AUTOSSH = "Possible {0} port duplicate with AutoSSH watchdog port: {1}"
+
 PREFIX_TYPE_UNKNOWN = "Unknown Prefix type \"{0}\", Using type \"auto\" instead..."
 PREFIX_TYPE_NOT_SPECIFIED = "Prefix {0} is not specified type! Ignoring this prefix..."
 PREFIX_TYPE_UNMATCH = "Unmatch-type prefix used in this context: {0} type used but in {0} context!"
@@ -63,7 +66,8 @@ PREFIX_NOT_FOUND_REFERENCE = "Prefix key \"{0}\" referenced by \"{1}\" is not de
 PREFIX_ARGUMENT_COUNT_UNMATCH = "Prefix \"{0}\" has {1} wildcard(s), but {2} argument(s) has given!"
 
 RANGE_SYNTAX_LOCAL_REMOTE_LEN_NOT_MATCH = "Local and Remote port range expression length is not match: \"{0}\""
-RANGE_SYNTAX_PRIORITY_TOKEN_ILLEGAL = "Parentheses expression is incorrect: \"{0}\""
+RANGE_SYNTAX_PRIORITY_TOKEN_START_ILLEGAL = "The start parenthesis expression is incorrect: \"{0}\""
+RANGE_SYNTAX_PRIORITY_TOKEN_END_ILLEGAL = "The end parentheses expression is incorrect: \"{0}\""
 RANGE_SYNTAX_BLANK_EXPRESSION_TOKEN = "Empty expression token exists: \"{0}\""
 RANGE_SYNTAX_EXPRESSION_NOT_AN_NUMBER = "Range expression token is not numeric: \"{0}\""
 
@@ -92,9 +96,12 @@ class ConfigOptions:
     backgroundDaemon = "yes"
     socket = "yes"
     socketPath = "/tmp/ssh-reverse-sock"
-    forwardPortList = list()
     useAutoSSH = "no"
     autoSshEchoPort = 20000
+
+    forwardPortList = list()
+    currentForwardPort = list()
+    currentLocalPort = list()
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -148,6 +155,11 @@ class ConfigOptions:
 
         return sshCommand.build()
 
+    def portListAppend(self, portObj):
+        self.currentForwardPort.extend(portObj.forward_port)
+        self.currentLocalPort.extend(portObj.local_port)
+        self.forwardPortList.append(portObj)
+
 
 class Context:
     class ContextStack:
@@ -155,6 +167,12 @@ class Context:
         currentLineNumber = 1
         currentOptionContext = ""
         currentAlias = ""
+
+        def __init__(self, currentProcessFile=None, currentAlias=""):
+            self.currentLineNumber = 1
+            self.currentOptionContext = ""
+            self.currentProcessFile = currentProcessFile
+            self.currentAlias = currentAlias
 
     stubCommandRun = False
     useExpression = True
@@ -177,13 +195,7 @@ class Context:
     def __init__(self, fileName):
         self.currentOptionObj = ConfigOptions()
         self.stackList = list()
-        initializeStack = Context.ContextStack()
-
-        initializeStack.currentLineNumber = 1
-        initializeStack.currentProcessFile = fileName
-        initializeStack.currentOptionContext = ""
-        initializeStack.currentAliasList = ""
-
+        initializeStack = Context.ContextStack(fileName)
         self.stackList.append(initializeStack)
 
 
@@ -388,7 +400,7 @@ class PrefixObj:
     @staticmethod
     def getIncludeInnerKey(rawKey):
         if context.stackList.__len__() > 1 > rawKey.count(PrefixToken.PREFIX_TOKEN_CLASS_IDENTIFIER):
-            return f"{Context.getLast(context.stackList).currentAliasList}.{rawKey}"
+            return f"{Context.getLast(context.stackList).currentAlias}.{rawKey}"
         else:
             return rawKey
 
@@ -477,10 +489,12 @@ class PrefixObj:
 class RangeObj:
     exprList = None
     includePort = None
+    currentPriority = 0
 
     def __init__(self):
         self.exprList = list()
         self.includePort = list()
+        self.currentPriority = 0
 
     @staticmethod
     def rangeSyntaxParse(data):
@@ -498,10 +512,13 @@ class RangeObj:
             if re.search(r"[^0-9\-!()]", singleExpr):
                 Log.w(RANGE_SYNTAX_EXPRESSION_NOT_AN_NUMBER.format(singleExpr))
 
-            singleExprObj = RangeExpr.parseSingleExpr(singleExpr.strip())
+            singleExprObj = RangeExpr.parseSingleExpr(singleExpr.strip(), newObj.currentPriority)
+            newObj.currentPriority = singleExprObj.nextPriority
             newObj.exprList.append(singleExprObj)
             if context.useExprDebug:
                 Log.d("{0} {1} {2}".format(syntaxList, singleExpr, singleExprObj.toString()))
+        if newObj.currentPriority > 0:
+            Log.w(RANGE_SYNTAX_PRIORITY_TOKEN_START_ILLEGAL.format(data))
         return newObj
 
     def interpret(self):
@@ -543,13 +560,15 @@ class RangeExpr:
     TOKEN_WEIGHT_END = ")"
 
     priority = 0
+    nextPriority = 0
     isExclude = False
     start = 0
     end = 65535
 
     @staticmethod
-    def parseSingleExpr(data):
+    def parseSingleExpr(data, defaultPriority=0):
         newObj = RangeExpr()
+        newObj.priority = defaultPriority
 
         startCombine = ""
         endCombine = ""
@@ -584,10 +603,13 @@ class RangeExpr:
             if endCombine == "":
                 newObj.end = int(startCombine)
 
-        if startWeight == endWeight:
-            newObj.priority = startWeight
-        else:
-            Log.w(RANGE_SYNTAX_PRIORITY_TOKEN_ILLEGAL.format(data))
+        newObj.priority += startWeight
+        newObj.nextPriority = newObj.priority - endWeight
+
+        if newObj.nextPriority < 0:
+            Log.w(RANGE_SYNTAX_PRIORITY_TOKEN_END_ILLEGAL.format(data))
+            newObj.nextPriority = 0
+
         return newObj
 
     def toList(self):
@@ -657,11 +679,7 @@ def runIncludes(dataLine):
     includeAlias = dataLineList[0].strip()
     includeFile = dataLineList[1].strip()
 
-    currentStack = Context.ContextStack()
-    currentStack.currentLineNumber = 1
-    currentStack.currentProcessFile = includeFile
-    currentStack.currentOptionContext = ""
-    currentStack.currentAliasList = includeAlias
+    currentStack = Context.ContextStack(includeFile, includeAlias)
     context.stackList.append(currentStack)
 
     with open(includeFile, "r") as includeFileObj:
@@ -700,7 +718,32 @@ def interpretLine(dataLine, isExternalInclude=False, includeAlias=""):
         runIncludes(stripLine)
 
     if currentContext == OPTION_TYPE.FORWARDS.value:
-        context.currentOptionObj.forwardPortList.append(ForwardObject.parseFrom(stripLine))
+        def getDuplicateListElement(list1, list2):
+            return list(set(list1).intersection(list2))
+
+        def hasDuplicateListElement(list1, list2):
+            return getDuplicateListElement(list1, list2).__len__() > 0
+
+        currentOption = context.currentOptionObj
+        forwardPortObj = ForwardObject.parseFrom(stripLine)
+
+        if currentOption.useAutoSSH:
+            autoSSHPort = int(currentOption.autoSshEchoPort)
+            autoSSHPortList = [autoSSHPort, autoSSHPort + 1]
+
+            if hasDuplicateListElement(autoSSHPortList, forwardPortObj.forward_port):
+                Log.i(CONFIG_FORWARD_PORT_DUPLICATE_AUTOSSH.format("forward", getDuplicateListElement(autoSSHPortList, forwardPortObj.forward_port)[0]))
+
+            if hasDuplicateListElement(autoSSHPortList, forwardPortObj.local_port):
+                Log.i(CONFIG_FORWARD_PORT_DUPLICATE_AUTOSSH.format("local", getDuplicateListElement(autoSSHPortList, forwardPortObj.local_port)[0]))
+
+        if hasDuplicateListElement(currentOption.currentForwardPort, forwardPortObj.forward_port):
+            Log.i(CONFIG_FORWARD_PORT_DUPLICATE.format("forward", getDuplicateListElement(currentOption.currentForwardPort, forwardPortObj.forward_port)))
+
+        if hasDuplicateListElement(currentOption.currentLocalPort, forwardPortObj.local_port):
+            Log.i(CONFIG_FORWARD_PORT_DUPLICATE.format("local", getDuplicateListElement(currentOption.currentLocalPort, forwardPortObj.local_port)))
+
+        context.currentOptionObj.portListAppend(forwardPortObj)
 
     if currentContext == OPTION_TYPE.PREFIXES.value:
         prefixData = PrefixObj.buildFrom(stripLine)
