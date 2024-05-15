@@ -11,6 +11,7 @@ n-m           => Select multiple port, "n" to "m"
 (exp)         => Assigns weight to specific expressions.
 ((exp))       => Gives more weight to certain expressions.
 exp,exp,exp   => Write multiple expressions on one line. Separated by ",".
+(exp,exp),exp => Gives more weight to multiple expressions at once.
 
 For Example,
 These four forwarding ranges can be abbreviated as follows:
