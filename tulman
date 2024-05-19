@@ -5,7 +5,7 @@ import sys
 import re
 from enum import Enum
 
-version = "1.0.1"
+version = "1.1.0"
 help_string = f"""
  SSH Reverse Tunneling Configuration Tool
  Version {version} Written By. Choiman1559
@@ -227,6 +227,7 @@ class PrefixType(ExtendedEnum):
     
     
 class ExprTokens:
+    CONFIG_TOKEN_BLANK = ""
     CONFIG_TOKEN_CATEGORY = "$"
     CONFIG_TOKEN_COMMENT = "#"
     CONFIG_TOKEN_FORWARD_SEPERATOR = ":"
@@ -460,6 +461,8 @@ class PrefixObj:
 
         if dataArray[0].strip().count(ExprTokens.PREFIX_TOKEN_TYPE_IDENTIFIER) > 0:
             keyTypeArray = dataArray[0].split(ExprTokens.PREFIX_TOKEN_TYPE_IDENTIFIER)
+            keyTypeArray = list(filter(ExprTokens.CONFIG_TOKEN_BLANK.__ne__, keyTypeArray))
+
             if keyTypeArray[0] not in PrefixType.list():
                 Log.w(PREFIX_TYPE_UNKNOWN.format(keyTypeArray[0]))
             else:
@@ -640,7 +643,7 @@ class ForwardObject:
     def parseFrom(data):
         data = data.strip()
         typeList = PrefixObj.splitPreference(data, ExprTokens.PREFIX_TOKEN_TYPE_IDENTIFIER)
-        dataList = typeList[1].split(ExprTokens.CONFIG_TOKEN_FORWARD_SEPERATOR)
+        dataList = list(filter(ExprTokens.CONFIG_TOKEN_BLANK.__ne__, typeList[1].split(ExprTokens.CONFIG_TOKEN_FORWARD_SEPERATOR)))
 
         obj = ForwardObject()
         obj.rawData = data
