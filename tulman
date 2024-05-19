@@ -54,8 +54,8 @@ CONFIG_FILE_NOT_SPECIFIED = "Configuration file not specified!"
 CONFIG_FILE_NOT_FOUND = "Configuration file not found or readable!"
 CONFIG_CATEGORY_TYPE_NOT_SUPPORTED = "Configuration category type not supported: \"{0}\""
 CONFIG_PREF_KEY_NOT_SUPPORTED = "Configuration preference key not supported: \"{0}\""
-CONFIG_FORWARD_TYPE_NOT_SUPPORTED = "Forward type \"{0}\" not supported!"
 
+CONFIG_FORWARD_TYPE_NOT_SUPPORTED = "Forward type \"{0}\" not supported!"
 CONFIG_FORWARD_PORT_DUPLICATE = "Possible {0} port duplicate: {1}"
 CONFIG_FORWARD_PORT_DUPLICATE_AUTOSSH = "Possible {0} port duplicate with AutoSSH watchdog port: {1}"
 
@@ -101,7 +101,7 @@ class ConfigOptions:
 
     forwardPortList = list()
     currentForwardPort = list()
-    currentLocalPort = list()
+    currentLocalPort = dict()
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -157,7 +157,7 @@ class ConfigOptions:
 
     def portListAppend(self, portObj):
         self.currentForwardPort.extend(portObj.forward_port)
-        self.currentLocalPort.extend(portObj.local_port)
+        self.currentLocalPort[portObj.local_addr].extend(portObj.local_port)
         self.forwardPortList.append(portObj)
 
 
@@ -226,7 +226,12 @@ class PrefixType(ExtendedEnum):
     PREFIX_TYPE_AUTO = "auto"
     
     
-class PrefixToken:
+class ExprTokens:
+    CONFIG_TOKEN_CATEGORY = "$"
+    CONFIG_TOKEN_COMMENT = "#"
+    CONFIG_TOKEN_FORWARD_SEPERATOR = ":"
+    CONFIG_TOKEN_KEY_VALUE_SEPERATOR = "="
+
     PREFIX_TOKEN_WILDCARD = "*"
     PREFIX_TOKEN_REFERENCE = "&"
     PREFIX_TOKEN_ARGUMENT_START = "("
@@ -235,6 +240,11 @@ class PrefixToken:
     PREFIX_TOKEN_ARGUMENT_NOTHING = "~"
     PREFIX_TOKEN_CLASS_IDENTIFIER = "."
     PREFIX_TOKEN_TYPE_IDENTIFIER = " "
+
+    RANGE_TOKEN_NOT = "!"
+    RANGE_TOKEN_RANGE = "-"
+    RANGE_TOKEN_WEIGHT_START = "("
+    RANGE_TOKEN_WEIGHT_END = ")"
 
 
 class PrefixAddrExpr:
@@ -269,7 +279,7 @@ class PrefixAddrExpr:
                 finalDataCombine = ""
 
                 for charExpr in list(prefixOverrideObj.prefixFinalData):
-                    if charExpr == PrefixToken.PREFIX_TOKEN_WILDCARD:
+                    if charExpr == ExprTokens.PREFIX_TOKEN_WILDCARD:
                         finalDataCombine += self.argsCombine[overrideWildcardCount]
                         overrideWildcardCount += 1
                     else:
@@ -287,20 +297,20 @@ class PrefixAddrExpr:
         argCombineCache = ""
 
         for charExpr in list(newObj.rawData):
-            if charExpr == PrefixToken.PREFIX_TOKEN_REFERENCE:
+            if charExpr == ExprTokens.PREFIX_TOKEN_REFERENCE:
                 isKeyStart = True
                 continue
-            elif charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_START:
+            elif charExpr == ExprTokens.PREFIX_TOKEN_ARGUMENT_START:
                 isKeyStart = False
                 isArgStart = True
                 continue
             elif (isArgStart and
-                  (charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_AND
-                   or charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_END)):
+                  (charExpr == ExprTokens.PREFIX_TOKEN_ARGUMENT_AND
+                   or charExpr == ExprTokens.PREFIX_TOKEN_ARGUMENT_END)):
                 newObj.argsCombine.append(argCombineCache.strip())
                 argCombineCache = ""
                 continue
-            elif charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_NOTHING:
+            elif charExpr == ExprTokens.PREFIX_TOKEN_ARGUMENT_NOTHING:
                 newObj.argsCombine.append("")
                 argCombineCache = ""
                 continue
@@ -332,9 +342,9 @@ class PrefixPortExpr:
         newObj = PrefixPortExpr()
         newObj.rawData = data.strip()
 
-        portExprList = newObj.rawData.split(PrefixToken.PREFIX_TOKEN_ARGUMENT_AND)
+        portExprList = newObj.rawData.split(ExprTokens.PREFIX_TOKEN_ARGUMENT_AND)
         for portExprSingle in portExprList:
-            if portExprSingle.count(PrefixToken.PREFIX_TOKEN_REFERENCE) < 1:
+            if portExprSingle.count(ExprTokens.PREFIX_TOKEN_REFERENCE) < 1:
                 newObj.interpretedList.append(portExprSingle)
                 continue
 
@@ -343,12 +353,12 @@ class PrefixPortExpr:
             strCombineCache = ""
 
             for charExpr in list(portExprSingle):
-                if charExpr == PrefixToken.PREFIX_TOKEN_REFERENCE:
+                if charExpr == ExprTokens.PREFIX_TOKEN_REFERENCE:
                     isKeyStart = True
                     continue
-                elif isKeyStart and (charExpr == RangeExpr.TOKEN_NOT or
-                                     charExpr == RangeExpr.TOKEN_RANGE or
-                                     charExpr == RangeExpr.TOKEN_WEIGHT_END):
+                elif isKeyStart and (charExpr == ExprTokens.RANGE_TOKEN_NOT or
+                                     charExpr == ExprTokens.RANGE_TOKEN_RANGE or
+                                     charExpr == ExprTokens.RANGE_TOKEN_WEIGHT_END):
                     isKeyStart = False
                     prefixOverrideObj = None
                     keyCombineCache = (PrefixObj.getIncludeInnerKey(keyCombineCache))
@@ -399,13 +409,13 @@ class PrefixObj:
 
     @staticmethod
     def getIncludeInnerKey(rawKey):
-        if context.stackList.__len__() > 1 > rawKey.count(PrefixToken.PREFIX_TOKEN_CLASS_IDENTIFIER):
+        if context.stackList.__len__() > 1 > rawKey.count(ExprTokens.PREFIX_TOKEN_CLASS_IDENTIFIER):
             return f"{Context.getLast(context.stackList).currentAlias}.{rawKey}"
         else:
             return rawKey
 
     @staticmethod
-    def splitPreference(rawData, separator="="):
+    def splitPreference(rawData, separator=ExprTokens.CONFIG_TOKEN_KEY_VALUE_SEPERATOR):
         key = rawData[0:rawData.index(separator)].strip()
         value = rawData[rawData.index(separator) + 1:].strip()
         return [key, value]
@@ -417,15 +427,15 @@ class PrefixObj:
         keyCombine = ""
 
         for charExpr in list(data):
-            if charExpr == PrefixToken.PREFIX_TOKEN_REFERENCE:
+            if charExpr == ExprTokens.PREFIX_TOKEN_REFERENCE:
                 isKeyStart = True
                 continue
-            elif charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_START:
+            elif charExpr == ExprTokens.PREFIX_TOKEN_ARGUMENT_START:
                 isKeyStart = False
                 continue
             elif (isKeyStart and
-                  (charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_AND
-                   or charExpr == PrefixToken.PREFIX_TOKEN_ARGUMENT_END)):
+                  (charExpr == ExprTokens.PREFIX_TOKEN_ARGUMENT_AND
+                   or charExpr == ExprTokens.PREFIX_TOKEN_ARGUMENT_END)):
                 break
 
             if isKeyStart:
@@ -446,10 +456,10 @@ class PrefixObj:
 
         newObj.prefixType = PrefixType.PREFIX_TYPE_AUTO
         newObj.prefixRawData = dataArray[1]
-        newObj.prefixCountWildcard = dataArray[1].count(PrefixToken.PREFIX_TOKEN_WILDCARD)
+        newObj.prefixCountWildcard = dataArray[1].count(ExprTokens.PREFIX_TOKEN_WILDCARD)
 
-        if dataArray[0].strip().count(PrefixToken.PREFIX_TOKEN_TYPE_IDENTIFIER) > 0:
-            keyTypeArray = dataArray[0].split(PrefixToken.PREFIX_TOKEN_TYPE_IDENTIFIER)
+        if dataArray[0].strip().count(ExprTokens.PREFIX_TOKEN_TYPE_IDENTIFIER) > 0:
+            keyTypeArray = dataArray[0].split(ExprTokens.PREFIX_TOKEN_TYPE_IDENTIFIER)
             if keyTypeArray[0] not in PrefixType.list():
                 Log.w(PREFIX_TYPE_UNKNOWN.format(keyTypeArray[0]))
             else:
@@ -463,7 +473,7 @@ class PrefixObj:
             if newObj.prefixType == PrefixType.PREFIX_TYPE_AUTO:
                 Log.w(PREFIX_TYPE_NOT_SPECIFIED.format(newObj.prefixRawData))
 
-        if newObj.prefixRawData.count(PrefixToken.PREFIX_TOKEN_REFERENCE) > 0:
+        if newObj.prefixRawData.count(ExprTokens.PREFIX_TOKEN_REFERENCE) > 0:
             prefixExprObj = None
 
             if newObj.prefixType == PrefixType.PREFIX_TYPE_ADDR:
@@ -498,12 +508,12 @@ class RangeObj:
 
     @staticmethod
     def rangeSyntaxParse(data):
-        if data.count(PrefixToken.PREFIX_TOKEN_REFERENCE) > 0:
+        if data.count(ExprTokens.PREFIX_TOKEN_REFERENCE) > 0:
             prefixExpr = PrefixPortExpr.parseFrom(data)
             data = prefixExpr.interpret()
 
         newObj = RangeObj()
-        syntaxList = data.strip().split(",")
+        syntaxList = data.strip().split(ExprTokens.PREFIX_TOKEN_ARGUMENT_AND)
 
         for singleExpr in syntaxList:
             if singleExpr == "":
@@ -554,10 +564,6 @@ class RangeObj:
 
 
 class RangeExpr:
-    TOKEN_NOT = "!"
-    TOKEN_RANGE = "-"
-    TOKEN_WEIGHT_START = "("
-    TOKEN_WEIGHT_END = ")"
 
     priority = 0
     nextPriority = 0
@@ -578,15 +584,15 @@ class RangeExpr:
         endWeight = 0
 
         for charExpr in list(data):
-            if charExpr == RangeExpr.TOKEN_NOT:
+            if charExpr == ExprTokens.RANGE_TOKEN_NOT:
                 newObj.isExclude = not newObj.isExclude
-            elif charExpr == RangeExpr.TOKEN_RANGE:
+            elif charExpr == ExprTokens.RANGE_TOKEN_RANGE:
                 if startCombine != "":
                     newObj.start = int(startCombine)
                 isStartCombineEnd = True
-            elif charExpr == RangeExpr.TOKEN_WEIGHT_START:
+            elif charExpr == ExprTokens.RANGE_TOKEN_WEIGHT_START:
                 startWeight += 1
-            elif charExpr == RangeExpr.TOKEN_WEIGHT_END:
+            elif charExpr == ExprTokens.RANGE_TOKEN_WEIGHT_END:
                 endWeight += 1
             else:
                 if isStartCombineEnd:
@@ -633,29 +639,45 @@ class ForwardObject:
     @staticmethod
     def parseFrom(data):
         data = data.strip()
-        typeList = PrefixObj.splitPreference(data, PrefixToken.PREFIX_TOKEN_TYPE_IDENTIFIER)
-        dataList = typeList[1].split(":")
+        typeList = PrefixObj.splitPreference(data, ExprTokens.PREFIX_TOKEN_TYPE_IDENTIFIER)
+        dataList = typeList[1].split(ExprTokens.CONFIG_TOKEN_FORWARD_SEPERATOR)
 
         obj = ForwardObject()
         obj.rawData = data
         obj.forward_type = typeList[0].upper()
 
+        if dataList.__len__() > 3:
+            rawVisibleRangeAddr = dataList[0]
+            rawForwardPort = dataList[1]
+            rawLocalAddr = dataList[2]
+            rawLocalPort = dataList[3]
+
+            if rawVisibleRangeAddr.startswith(ExprTokens.PREFIX_TOKEN_REFERENCE):
+                prefixExpr = PrefixAddrExpr.parseFrom(rawVisibleRangeAddr)
+                obj.forward_range = prefixExpr.interpret()
+            else:
+                obj.forward_range = rawVisibleRangeAddr
+        else:
+            rawForwardPort = dataList[0]
+            rawLocalAddr = dataList[1]
+            rawLocalPort = dataList[2]
+
         if context.useExpression:
-            obj.forward_port = RangeObj.rangeSyntaxParse(dataList[0]).interpret()
-            obj.local_port = RangeObj.rangeSyntaxParse(dataList[2]).interpret()
+            obj.forward_port = RangeObj.rangeSyntaxParse(rawForwardPort).interpret()
+            obj.local_port = RangeObj.rangeSyntaxParse(rawLocalPort).interpret()
 
             if context.useExprDebug:
                 Log.d("fw => {0}".format(obj.forward_port))
                 Log.d("lc => {0}".format(obj.local_port))
         else:
-            obj.forward_port = dataList[0]
-            obj.local_port = dataList[2]
+            obj.forward_port = rawForwardPort
+            obj.local_port = rawLocalPort
 
-        if dataList[1].startswith(PrefixToken.PREFIX_TOKEN_REFERENCE):
-            prefixExpr = PrefixAddrExpr.parseFrom(dataList[1])
+        if rawLocalAddr.startswith(ExprTokens.PREFIX_TOKEN_REFERENCE):
+            prefixExpr = PrefixAddrExpr.parseFrom(rawLocalAddr)
             obj.local_addr = prefixExpr.interpret()
         else:
-            obj.local_addr = dataList[1]
+            obj.local_addr = rawLocalAddr
         return obj
 
     def toCommand(self):
@@ -685,21 +707,21 @@ def runIncludes(dataLine):
     with open(includeFile, "r") as includeFileObj:
         for includeLine in includeFileObj.readlines():
             interpretLine(includeLine, True, includeAlias)
-            context.stackList[context.stackList.__len__() - 1].currentLineNumber += 1
+            context.getLast(context.stackList).currentLineNumber += 1
 
     context.stackList.pop()
 
 
 def interpretLine(dataLine, isExternalInclude=False, includeAlias=""):
     stripLine = dataLine.strip()
-    if stripLine == "" or stripLine.startswith("#"):
+    if stripLine == "" or stripLine.startswith(ExprTokens.CONFIG_TOKEN_COMMENT):
         return
-    stripLine = stripLine.split("#")[0].strip()
+    stripLine = stripLine.split(ExprTokens.CONFIG_TOKEN_COMMENT)[0].strip()
 
-    if stripLine.startswith("$"):
+    if stripLine.startswith(ExprTokens.CONFIG_TOKEN_CATEGORY):
         contextType = stripLine[1:]
         if contextType in OPTION_TYPE.list():
-            context.stackList[context.stackList.__len__() - 1].currentOptionContext = contextType
+            context.getLast(context.stackList).currentOptionContext = contextType
         else:
             Log.w(CONFIG_CATEGORY_TYPE_NOT_SUPPORTED.format(contextType))
         return
@@ -740,8 +762,11 @@ def interpretLine(dataLine, isExternalInclude=False, includeAlias=""):
         if hasDuplicateListElement(currentOption.currentForwardPort, forwardPortObj.forward_port):
             Log.i(CONFIG_FORWARD_PORT_DUPLICATE.format("forward", getDuplicateListElement(currentOption.currentForwardPort, forwardPortObj.forward_port)))
 
-        if hasDuplicateListElement(currentOption.currentLocalPort, forwardPortObj.local_port):
-            Log.i(CONFIG_FORWARD_PORT_DUPLICATE.format("local", getDuplicateListElement(currentOption.currentLocalPort, forwardPortObj.local_port)))
+        if forwardPortObj.local_addr not in currentOption.currentLocalPort.keys():
+            currentOption.currentLocalPort[forwardPortObj.local_addr] = list()
+
+        if hasDuplicateListElement(currentOption.currentLocalPort[forwardPortObj.local_addr], forwardPortObj.local_port):
+            Log.i(CONFIG_FORWARD_PORT_DUPLICATE.format("local", getDuplicateListElement(currentOption.currentLocalPort[forwardPortObj.local_addr], forwardPortObj.local_port)))
 
         context.currentOptionObj.portListAppend(forwardPortObj)
 
